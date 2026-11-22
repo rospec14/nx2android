@@ -117,6 +117,10 @@ public final class ZipCheck {
         ok("x/y".equals(SaveZip.inside(P + "x/y", P)) && SaveZip.inside(P, P) == null && SaveZip.inside(P + "a/../b", P) == null && SaveZip.inside("other/x", P) == null, "inside");
         ok((T + ".device/").equals(SaveZip.devicePrefix(P)) && "z".equals(SaveZip.inside(T + ".device/z", SaveZip.devicePrefix(P))), "the device save");
         ok("a/b".equals(SaveZip.norm("\\a\\b")), "a Windows zip's names");
+        ok(SaveZip.isZip(new byte[] {'P', 'K', 3, 4}, 4) && SaveZip.isZip(new byte[] {'P', 'K', 5, 6}, 4), "a zip, and an empty one");
+        ok(!SaveZip.isZip(new byte[] {'P', 'K', 3, 4}, 3) && !SaveZip.isZip(new byte[] {0x42, 0x00, 0x00, 0x00}, 4), "a short file, a save file");
+        ok("main".equals(SaveZip.looseName("main")) && "main".equals(SaveZip.looseName("main (1)")) && "save.dat".equals(SaveZip.looseName("save (12).dat")), "a picker's copy suffix");
+        ok("main".equals(SaveZip.looseName("Download/ugreenPro/main")) && SaveZip.looseName("..") == null && SaveZip.looseName(" ") == null, "no path, no empty name");
     }
 }
 '''

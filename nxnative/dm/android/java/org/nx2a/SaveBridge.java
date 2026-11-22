@@ -38,6 +38,8 @@ import java.util.zip.ZipOutputStream;
  *   so a sync app watching the folder (FolderSync's instant sync) sees each changed file, and an unchanged file is not written again.
  *   Export save: a .zip the player names and places, holding <title ID>/<the save's files>. Import save: such a .zip, refused when it holds no folder named
  *   after this game's title ID; accepted ones are unpacked into the files folder's saves/ and imported at the next start, as a save folder put there is.
+ *   A save of one file is exported as that file, and a file that is not a zip is imported as the whole save (a console's save tools dump Pokémon Sword's
+ *   as one main): it names no game, so the player confirms which one it goes to.
  * Native calls arrive on its own threads; the pickers and dialogs run on the UI thread, the copying on a thread of its own, and each request ends in exactly one
  * done(kind, code, message).
  */
@@ -51,6 +53,7 @@ public final class SaveBridge {
     private final Activity activity;
     private int pending;                       // the kind of the request under way, 0 none (the UI thread, or under this)
     private String title = "", dir = "";       // the request's title ID, and its folder (Export: the copy to zip; Import: saves/)
+    private volatile File loose;               // Export: the save's one file, written as it is; null, a zip
 
     SaveBridge(Activity activity) { this.activity = activity; }
 
@@ -77,9 +80,12 @@ public final class SaveBridge {
     /** folder: the save as exported to saves/ (saves_android.c dm_saves_export), zipped where the player says */
     public synchronized boolean exportZip(String folder, String titleId) {
         if (!start(EXPORT, titleId, folder)) return false;
+        File[] list = new File(folder).listFiles();
+        final File one = loose = list != null && list.length == 1 && list[0].isFile() && !new File(folder + ".device").exists() ? list[0] : null;
         activity.runOnUiThread(() -> {
-            Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/zip")
-                .putExtra(Intent.EXTRA_TITLE, appName() + " save data - " + new SimpleDateFormat("yyyy-MM-dd HH_mm", Locale.US).format(new Date()) + ".zip");
+            Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE);
+            if (one != null) i.setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE, one.getName());
+            else i.setType("application/zip").putExtra(Intent.EXTRA_TITLE, appName() + " save data - " + new SimpleDateFormat("yyyy-MM-dd HH_mm", Locale.US).format(new Date()) + ".zip");
             launch(i, EXPORT);
         });
         return true;
@@ -87,11 +93,7 @@ public final class SaveBridge {
     /** saves: the files folder's saves/, where an accepted zip is unpacked */
     public synchronized boolean importZip(String saves, String titleId) {
         if (!start(IMPORT, titleId, saves)) return false;
-        activity.runOnUiThread(() -> {
-            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
-                .putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"application/zip", "application/x-zip-compressed", "application/x-zip", "application/octet-stream"});
-            launch(i, IMPORT);
-        });
+        activity.runOnUiThread(() -> launch(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), IMPORT));   // any file: a zip, or a save file
         return true;
     }
     /** The folder's <title ID>/ (and .device/) copied into stage (and stage.device): 1, 0 when the folder has no save of this game, -1 failed, -2 no access */
@@ -199,6 +201,7 @@ public final class SaveBridge {
 
     // ---- export and import ----
     private void exportTo(Uri zip) {
+        File one = loose; if (one != null) { exportFile(zip, one); return; }
         ContentResolver cr = activity.getContentResolver(); int files = 0;
         try (OutputStream raw = cr.openOutputStream(zip, "wt"); ZipOutputStream out = new ZipOutputStream(raw)) {
             if (raw == null) throw new IOException("the file could not be opened");
@@ -208,8 +211,22 @@ public final class SaveBridge {
             try { DocumentsContract.deleteDocument(cr, zip); } catch (Exception ignored) {}
             fail(EXPORT, "The zip file could not be written: " + e.getMessage(), e); return;
         }
-        android.util.Log.i("dmhost", "[saves] exported " + files + " files to " + zip);
-        String shown = name(cr, zip), where = folderOf(zip);
+        exported(cr, zip, files);
+    }
+    private void exportFile(Uri doc, File f) {   // the save's one file as it is: what a console's save tools give
+        ContentResolver cr = activity.getContentResolver();
+        try (OutputStream out = cr.openOutputStream(doc, "wt"); InputStream in = new FileInputStream(f)) {
+            if (out == null) throw new IOException("the file could not be opened");
+            byte[] buf = new byte[1 << 16]; for (int k; (k = in.read(buf)) > 0;) out.write(buf, 0, k);
+        } catch (IOException | RuntimeException e) {
+            try { DocumentsContract.deleteDocument(cr, doc); } catch (Exception ignored) {}
+            fail(EXPORT, "The save file could not be written: " + e.getMessage(), e); return;
+        }
+        exported(cr, doc, 1);
+    }
+    private void exported(ContentResolver cr, Uri doc, int files) {
+        android.util.Log.i("dmhost", "[saves] exported " + files + " files to " + doc);
+        String shown = name(cr, doc), where = folderOf(doc);
         activity.runOnUiThread(() -> android.widget.Toast.makeText(activity, where != null ? "Save exported to " + where : "Save exported: " + shown,   // (a toast shows
             android.widget.Toast.LENGTH_LONG).show());                                                                                           // two lines at most)
         finish(EXPORT, OK, shown);
@@ -238,6 +255,10 @@ public final class SaveBridge {
     }
     private void importFrom(Uri zip) {
         ContentResolver cr = activity.getContentResolver(); String shown = name(cr, zip); SaveZip.Layout l;
+        byte[] head = new byte[4]; int got;
+        try (InputStream in = cr.openInputStream(zip)) { if (in == null) throw new IOException("the file could not be opened"); got = readFull(in, head); }
+        catch (IOException | RuntimeException e) { fail(IMPORT, shown + " could not be read: " + e.getMessage(), e); return; }
+        if (!SaveZip.isZip(head, got)) { importLoose(zip, shown, got); return; }
         try { l = scan(cr, zip); } catch (IOException | RuntimeException e) { fail(IMPORT, shown + " could not be read: " + e.getMessage(), e); return; }
         if (l.unsafe != null) { fail(IMPORT, shown + " has a path that leaves its folder (" + l.unsafe + "): it is not imported.", null); return; }
         if (l.prefix == null) {
@@ -255,8 +276,7 @@ public final class SaveBridge {
             .setOnCancelListener(d -> finish(IMPORT, CANCELLED, "")).show());
     }
     private void unpack(Uri zip, String prefix) {   // into saves/<stamp>-zip (and .device), through hidden .part folders renamed once whole
-        String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()), name = stamp + "-zip";
-        for (int k = 2; new File(dir, name).exists() && k < 100; k++) name = stamp + "-zip-" + k;
+        String name = stamped("-zip");
         File part = new File(dir, "." + name + ".part"), partDev = new File(dir, "." + name + ".part.device");
         String devPrefix = SaveZip.devicePrefix(prefix);
         ContentResolver cr = activity.getContentResolver(); byte[] buf = new byte[1 << 16];
@@ -282,6 +302,40 @@ public final class SaveBridge {
             fail(IMPORT, "The save could not be unpacked: " + e.getMessage(), e); return;
         }
         finish(IMPORT, OK, name);
+    }
+    // A save file on its own (Pokémon Sword's main as a console's save tools dump it): nothing in it names the game, so the player confirms this is its save
+    private void importLoose(Uri file, String shown, int got) {
+        String as = SaveZip.looseName(shown);
+        if (as == null || got == 0) { fail(IMPORT, shown + " is empty, or has no name to save it as.", null); return; }
+        activity.runOnUiThread(() -> new AlertDialog.Builder(activity).setTitle("Import this save file?")
+            .setMessage(shown + (as.equals(shown) ? "" : " (imported as " + as + ")") + "\n\nA save file on its own does not say which game it is for: import it only if it "
+                + "is a save of " + appName() + ". It becomes the game's whole save. Your current save is backed up first (in the app's saves folder), then the game "
+                + "closes: open it again to play the imported save.")
+            .setPositiveButton("Import and close", (d, b) -> work(() -> copyLoose(file, as)))
+            .setNegativeButton("Cancel", (d, b) -> finish(IMPORT, CANCELLED, ""))
+            .setOnCancelListener(d -> finish(IMPORT, CANCELLED, "")).show());
+    }
+    private void copyLoose(Uri file, String as) {   // into saves/<stamp>-file/<as>, through a hidden .part folder renamed once whole
+        String name = stamped("-file"); File part = new File(dir, "." + name + ".part");
+        try {
+            delete(part);
+            if (!part.mkdirs()) throw new IOException("cannot make " + part);
+            try (InputStream in = activity.getContentResolver().openInputStream(file); FileOutputStream out = new FileOutputStream(new File(part, as))) {
+                if (in == null) throw new IOException("the file could not be opened");
+                byte[] buf = new byte[1 << 16]; for (int k; (k = in.read(buf)) > 0;) out.write(buf, 0, k);
+                out.getFD().sync();
+            }
+            if (!part.renameTo(new File(dir, name))) throw new IOException("cannot name the save folder");
+        } catch (IOException | RuntimeException e) {
+            delete(part);
+            fail(IMPORT, "The save file could not be copied: " + e.getMessage(), e); return;
+        }
+        finish(IMPORT, OK, name);
+    }
+    private String stamped(String kind) {   // a new folder name in saves/: <stamp><kind>, -2, -3 … after it when the second is taken
+        String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()), name = stamp + kind;
+        for (int k = 2; new File(dir, name).exists() && k < 100; k++) name = stamp + kind + "-" + k;
+        return name;
     }
 
     // ---- the documents in a tree ----

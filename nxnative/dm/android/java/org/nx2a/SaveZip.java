@@ -45,5 +45,14 @@ final class SaveZip {
     /** The device save's folder beside the save's: "<title ID>.device/" */
     static String devicePrefix(String prefix) { return prefix.substring(0, prefix.length() - 1) + ".device/"; }
 
+    /** Whether a file's first n bytes (up to 4) start a zip: a local file header, or an empty zip's end record */
+    static boolean isZip(byte[] head, int n) { return n >= 4 && head[0] == 'P' && head[1] == 'K' && (head[2] == 3 && head[3] == 4 || head[2] == 5 && head[3] == 6); }
+
+    /** A loose save file's name as the game reads it: no path, and without the " (1)" a picker or browser adds to a second copy; null when no name is left */
+    static String looseName(String shown) {
+        String n = norm(shown); n = n.substring(n.lastIndexOf('/') + 1).trim().replaceFirst(" \\(\\d+\\)(\\.[^.]*)?$", "$1");
+        return n.isEmpty() || n.equals(".") || n.equals("..") ? null : n;
+    }
+
     private static String join(String[] p, int k) { StringBuilder b = new StringBuilder(); for (int i = 0; i < k; i++) b.append(p[i]).append('/'); return b.toString(); }
 }
