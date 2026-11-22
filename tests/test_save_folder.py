@@ -121,6 +121,13 @@ public final class ZipCheck {
         ok(!SaveZip.isZip(new byte[] {'P', 'K', 3, 4}, 3) && !SaveZip.isZip(new byte[] {0x42, 0x00, 0x00, 0x00}, 4), "a short file, a save file");
         ok("main".equals(SaveZip.looseName("main")) && "main".equals(SaveZip.looseName("main (1)")) && "save.dat".equals(SaveZip.looseName("save (12).dat")), "a picker's copy suffix");
         ok("main".equals(SaveZip.looseName("Download/ugreenPro/main")) && SaveZip.looseName("..") == null && SaveZip.looseName(" ") == null, "no path, no empty name");
+        ok(SaveZip.otherNames("main", new String[] {"backup", "main"}) == null && SaveZip.otherNames("MAIN", new String[] {"main"}) == null, "the save has the name");
+        ok("backup, main".equals(SaveZip.otherNames("save.dat", new String[] {"main", "backup"})), "another name: the save's names");
+        ok(SaveZip.otherNames("save.dat", new String[0]) == null && SaveZip.otherNames("save.dat", null) == null, "no save yet: nothing to compare");
+        String[] saves = {"20261122-101236", "20261122-104038-before-import", "20261122-112258-before-import", "20261122-112253-zip", ".20261122-120000-before-import.part", "result.txt", "20261121-090000-before-folder"};
+        ok("20261122-112258-before-import".equals(SaveZip.lastBackup(saves)), "the newest backup");
+        ok(SaveZip.lastBackup(new String[] {"20261122-101236", "x-zip"}) == null && SaveZip.lastBackup(null) == null, "no backup");
+        ok("2026-11-22 10:40".equals(SaveZip.stampLabel("20261122-104038-before-import")) && "other".equals(SaveZip.stampLabel("other")), "a backup's date");
     }
 }
 '''

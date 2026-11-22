@@ -1,5 +1,6 @@
 package org.nx2a;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.TreeSet;
@@ -52,6 +53,26 @@ final class SaveZip {
     static String looseName(String shown) {
         String n = norm(shown); n = n.substring(n.lastIndexOf('/') + 1).trim().replaceFirst(" \\(\\d+\\)(\\.[^.]*)?$", "$1");
         return n.isEmpty() || n.equals(".") || n.equals("..") ? null : n;
+    }
+
+    /** The names in the game's save, sorted and joined, when it has files and none is named as (the file is likely another game's); null otherwise */
+    static String otherNames(String as, String[] have) {
+        if (have == null || have.length == 0) return null;
+        for (String h : have) if (h.equalsIgnoreCase(as)) return null;
+        String[] s = have.clone(); Arrays.sort(s); return String.join(", ", s);
+    }
+
+    /** The newest backup in saves/ that an import or a folder load made (<stamp>-before-import, <stamp>-before-folder), null none */
+    static String lastBackup(String[] names) {
+        String best = null;
+        if (names != null) for (String n : names) if (n.matches("\\d{8}-\\d{6}.*-before-(import|folder)(-\\d+)?") && (best == null || n.compareTo(best) > 0)) best = n;
+        return best;
+    }
+
+    /** A saves/ folder's stamp as a date ("20261122-104038-before-import" → "2026-11-22 10:40"), the name itself when it has none */
+    static String stampLabel(String name) {
+        if (!name.matches("\\d{8}-\\d{6}.*")) return name;
+        return name.substring(0, 4) + "-" + name.substring(4, 6) + "-" + name.substring(6, 8) + " " + name.substring(9, 11) + ":" + name.substring(11, 13);
     }
 
     private static String join(String[] p, int k) { StringBuilder b = new StringBuilder(); for (int i = 0; i < k; i++) b.append(p[i]).append('/'); return b.toString(); }

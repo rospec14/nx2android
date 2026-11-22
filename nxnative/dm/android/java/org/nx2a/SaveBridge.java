@@ -39,7 +39,8 @@ import java.util.zip.ZipOutputStream;
  *   Export save: a .zip the player names and places, holding <title ID>/<the save's files>. Import save: such a .zip, refused when it holds no folder named
  *   after this game's title ID; accepted ones are unpacked into the files folder's saves/ and imported at the next start, as a save folder put there is.
  *   A save of one file is exported as that file, and a file that is not a zip is imported as the whole save (a console's save tools dump Pokémon Sword's
- *   as one main): it names no game, so the player confirms which one it goes to.
+ *   as one main): it names no game, so the player confirms which one it goes to, warned when the game's save has no file of that name. Import save also
+ *   offers the save the last import (or folder load) replaced, so a wrong import is undone on the device.
  * Native calls arrive on its own threads; the pickers and dialogs run on the UI thread, the copying on a thread of its own, and each request ends in exactly one
  * done(kind, code, message).
  */
@@ -93,8 +94,30 @@ public final class SaveBridge {
     /** saves: the files folder's saves/, where an accepted zip is unpacked */
     public synchronized boolean importZip(String saves, String titleId) {
         if (!start(IMPORT, titleId, saves)) return false;
-        activity.runOnUiThread(() -> launch(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), IMPORT));   // any file: a zip, or a save file
+        final String back = SaveZip.lastBackup(new File(saves).list());
+        activity.runOnUiThread(() -> {
+            if (back == null) { pickImport(); return; }
+            new AlertDialog.Builder(activity).setTitle("Import save")
+                .setMessage("Choose a save to import (a .zip, or a save file on its own), or go back to the save this game had before its last import ("
+                    + SaveZip.stampLabel(back) + ").")
+                .setPositiveButton("Choose a file", (d, b) -> pickImport())
+                .setNeutralButton("Restore the previous save", (d, b) -> confirmRestore(back))
+                .setNegativeButton("Cancel", (d, b) -> finish(IMPORT, CANCELLED, ""))
+                .setOnCancelListener(d -> finish(IMPORT, CANCELLED, "")).show();
+        });
         return true;
+    }
+    private void pickImport() {   // any file: a zip, or a save file
+        launch(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), IMPORT);
+    }
+    // the backup the last import made (or a folder load), imported like any folder in saves/: the save it replaces is backed up in turn
+    private void confirmRestore(String back) {
+        new AlertDialog.Builder(activity).setTitle("Restore the previous save?")
+            .setMessage("The save from " + SaveZip.stampLabel(back) + " (" + back + ").\n\nYour current save is backed up first (in the app's saves folder), then the "
+                + "game closes: open it again to play the restored save.")
+            .setPositiveButton("Restore and close", (d, b) -> finish(IMPORT, OK, back))
+            .setNegativeButton("Cancel", (d, b) -> finish(IMPORT, CANCELLED, ""))
+            .setOnCancelListener(d -> finish(IMPORT, CANCELLED, "")).show();
     }
     /** The folder's <title ID>/ (and .device/) copied into stage (and stage.device): 1, 0 when the folder has no save of this game, -1 failed, -2 no access */
     public int restore(String titleId, String stage) {
@@ -307,8 +330,11 @@ public final class SaveBridge {
     private void importLoose(Uri file, String shown, int got) {
         String as = SaveZip.looseName(shown);
         if (as == null || got == 0) { fail(IMPORT, shown + " is empty, or has no name to save it as.", null); return; }
-        activity.runOnUiThread(() -> new AlertDialog.Builder(activity).setTitle("Import this save file?")
-            .setMessage(shown + (as.equals(shown) ? "" : " (imported as " + as + ")") + "\n\nA save file on its own does not say which game it is for: import it only if it "
+        String other = SaveZip.otherNames(as, new File(activity.getFilesDir(), "save").list());   // $DM_SAVE (front_android.c)
+        activity.runOnUiThread(() -> new AlertDialog.Builder(activity).setTitle(other != null ? "This may be another game's save" : "Import this save file?")
+            .setMessage((other != null ? appName() + "'s save has " + other + ". This file is named " + as + ": it is probably a save of another game, which this game "
+                    + "may not load, or may fail to start with.\n\n" : "")
+                + shown + (as.equals(shown) ? "" : " (imported as " + as + ")") + "\n\nA save file on its own does not say which game it is for: import it only if it "
                 + "is a save of " + appName() + ". It becomes the game's whole save. Your current save is backed up first (in the app's saves folder), then the game "
                 + "closes: open it again to play the imported save.")
             .setPositiveButton("Import and close", (d, b) -> work(() -> copyLoose(file, as)))
